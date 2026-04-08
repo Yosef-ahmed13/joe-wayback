@@ -7,33 +7,4 @@ on:
                     description: 'Single domain (e.g. example.com)'
                             required: false
                                     default: ''
-                                          domains_list:
-                                                  description: 'Multiple domains separated by commas'
-                                                          required: false
-                                                                  default: ''
-                                                                        output_format:
-                                                                                description: 'Output format txt or csv'
-                                                                                        required: false
-                                                                                                default: 'txt'
-                                                                                                      workers:
-                                                                                                              description: 'Concurrent workers 1-5'
-                                                                                                                      required: false
-                                                                                                                              default: '3'
-                                                                                                                                repository_dispatch:
-                                                                                                                                    types: [wayback-recon]
-                                                                                                                                    
-                                                                                                                                    env:
-                                                                                                                                      GO_VERSION: '1.22'
-                                                                                                                                      
-                                                                                                                                      jobs:
-                                                                                                                                        wayback:
-                                                                                                                                            name: WaybackURLs Recon
-                                                                                                                                                runs-on: ubuntu-latest
-                                                                                                                                                    timeout-minutes: 120
-                                                                                                                                                        steps:
-                                                                                                                                                              - name: Checkout Repository
-                                                                                                                                                                      uses: actions/checkout@v4
-                                                                                                                                                                            - name: Setup Go
-                                                                                                                                                                                    uses: actions/setup-go@v5
-                                                                                                                                                                                            with:
-                                                                                                                                                                                                      go-version: ${
+                                    
