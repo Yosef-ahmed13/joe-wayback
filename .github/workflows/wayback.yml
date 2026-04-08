@@ -1,10 +1,156 @@
-name: WaybackRecon Pipeline
+name: "🕵️ WaybackRecon — URL Collection Pipeline"
 
 on:
   workflow_dispatch:
-      inputs:
-            domain:
-                    description: 'Single domain (e.g. example.com)'
-                            required: false
-                                    default: ''
-                                    
+    inputs:
+      domain:
+        description: "Single domain (e.g. example.com)"
+        required: false
+        default: ""
+        type: string
+      domains_list:
+        description: "Multiple domains separated by commas (e.g. a.com,b.com)"
+        required: false
+        default: ""
+        type: string
+      output_format:
+        description: "Output file format"
+        required: false
+        default: "txt"
+        type: choice
+        options:
+          - txt
+          - csv
+      workers:
+        description: "Concurrent workers (1-5)"
+        required: false
+        default: "3"
+        type: string
+
+  repository_dispatch:
+    types: [wayback-recon]
+
+env:
+  GO_VERSION: "1.22"
+
+jobs:
+  wayback:
+    name: "WaybackURLs Recon"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: "Checkout Repository"
+        uses: actions/checkout@v4
+
+      - name: "Setup Go"
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: "Install waybackurls (fresh, no cache)"
+        run: |
+          echo "Installing waybackurls..."
+          go install github.com/tomnomnom/waybackurls@latest
+          echo "$HOME/go/bin" >> $GITHUB_PATH
+          echo "Done"
+
+      - name: "Build WaybackRecon Tool"
+        run: |
+          echo "Building wayback-recon..."
+          cd cmd/wayback
+          go build -o /usr/local/bin/wayback-recon .
+          echo "Build complete"
+
+      - name: "Prepare Domain List"
+        id: prep
+        env:
+          WD_DOMAIN: ${{ github.event.inputs.domain }}
+          WD_LIST: ${{ github.event.inputs.domains_list }}
+          WD_FORMAT: ${{ github.event.inputs.output_format }}
+          WD_WORKERS: ${{ github.event.inputs.workers }}
+        run: |
+          mkdir -p /tmp/wayback_input /tmp/wayback_results
+
+          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            DOMAIN=$(echo '${{ github.event.client_payload.domain }}' | tr -d '"')
+            DOMAINS_LIST=$(echo '${{ github.event.client_payload.domains }}' | tr -d '"')
+            FORMAT=$(echo '${{ github.event.client_payload.format }}' | tr -d '"')
+            WORKERS=$(echo '${{ github.event.client_payload.workers }}' | tr -d '"')
+            [[ -z "$FORMAT" ]] && FORMAT="txt"
+            [[ -z "$WORKERS" ]] && WORKERS="3"
+          else
+            DOMAIN="${WD_DOMAIN}"
+            DOMAINS_LIST="${WD_LIST}"
+            FORMAT="${WD_FORMAT:-txt}"
+            WORKERS="${WD_WORKERS:-3}"
+          fi
+
+          DOMAINS_FILE="/tmp/wayback_input/domains.txt"
+          touch "$DOMAINS_FILE"
+
+          if [[ -n "$DOMAIN" ]]; then
+            echo "$DOMAIN" | tr "," "\n" | sed "s/^ *//;s/ *$//;/^$/d" >> "$DOMAINS_FILE"
+          fi
+
+          if [[ -n "$DOMAINS_LIST" ]]; then
+            echo "$DOMAINS_LIST" | tr "," "\n" | sed "s/^ *//;s/ *$//;/^$/d" >> "$DOMAINS_FILE"
+          fi
+
+          sort -u "$DOMAINS_FILE" -o "$DOMAINS_FILE"
+          TOTAL=$(wc -l < "$DOMAINS_FILE" | tr -d " ")
+
+          if [[ "$TOTAL" -eq 0 ]]; then
+            echo "No domains provided!"
+            exit 1
+          fi
+
+          echo "Domains to scan ($TOTAL):"
+          cat "$DOMAINS_FILE"
+
+          echo "total_domains=$TOTAL" >> $GITHUB_OUTPUT
+          echo "format=$FORMAT" >> $GITHUB_OUTPUT
+          echo "workers=$WORKERS" >> $GITHUB_OUTPUT
+          echo "domains_file=$DOMAINS_FILE" >> $GITHUB_OUTPUT
+          echo "preview=$(head -3 $DOMAINS_FILE | tr \"\n\" \"\n\" | head -3 | tr \"\n\" \",\" | sed \"s/,\$//\")" >> $GITHUB_OUTPUT
+
+      - name: "Run WaybackURLs Recon"
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          export PATH="$PATH:$HOME/go/bin:/usr/local/bin"
+          echo "Starting wayback recon..."
+          wayback-recon \
+            -file    "${{ steps.prep.outputs.domains_file }}" \
+            -output  "/tmp/wayback_results" \
+            -format  "${{ steps.prep.outputs.format }}" \
+            -workers "${{ steps.prep.outputs.workers }}" \
+            -tg-token  "$TELEGRAM_BOT_TOKEN" \
+            -tg-chat   "$TELEGRAM_CHAT_ID"
+
+      - name: "Upload Results as GitHub Artifact"
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wayback-results-${{ github.run_id }}
+          path: /tmp/wayback_results/
+          retention-days: 7
+
+      - name: "Job Summary"
+        if: always()
+        run: |
+          echo "## WaybackRecon Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Targets | ${{ steps.prep.outputs.preview }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Domains | ${{ steps.prep.outputs.total_domains }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Format | ${{ steps.prep.outputs.format }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Run ID | ${{ github.run_id }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          ls /tmp/wayback_results/ 2>/dev/null | while read f; do
+            LINES=$(wc -l < /tmp/wayback_results/$f 2>/dev/null || echo "?")
+            echo "- $f — $LINES lines" >> $GITHUB_STEP_SUMMARY
+          done || true
