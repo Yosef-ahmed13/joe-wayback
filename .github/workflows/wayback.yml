@@ -9,7 +9,12 @@ on:
         default: ""
         type: string
       domains_list:
-        description: "Multiple domains separated by commas (e.g. a.com,b.com)"
+        description: "Multiple domains separated by commas or spaces"
+        required: false
+        default: ""
+        type: string
+      domains_url:
+        description: "🔗 Or provide a link to a .txt file (e.g., Raw Pastebin link)"
         required: false
         default: ""
         type: string
@@ -68,6 +73,7 @@ jobs:
         env:
           WD_DOMAIN: ${{ github.event.inputs.domain }}
           WD_LIST: ${{ github.event.inputs.domains_list }}
+          WD_URL: ${{ github.event.inputs.domains_url }}
           WD_FORMAT: ${{ github.event.inputs.output_format }}
           WD_WORKERS: ${{ github.event.inputs.workers }}
         run: |
@@ -84,6 +90,7 @@ jobs:
             DOMAIN="${WD_DOMAIN}"
             DOMAINS_LIST="${WD_LIST}"
             FORMAT="${WD_FORMAT:-txt}"
+            URL="${WD_URL}"
             WORKERS="${WD_WORKERS:-3}"
           fi
 
@@ -94,8 +101,13 @@ jobs:
             echo "$DOMAIN" | tr "," "\n" | sed "s/^ *//;s/ *$//;/^$/d" >> "$DOMAINS_FILE"
           fi
 
+          if [[ -n "$URL" ]]; then
+            echo "📥 Downloading domains from URL..."
+            curl -s "$URL" | sed "s/^ *//;s/ *$//;/^$/d" >> "$DOMAINS_FILE"
+          fi
+
           if [[ -n "$DOMAINS_LIST" ]]; then
-            echo "$DOMAINS_LIST" | tr "," "\n" | sed "s/^ *//;s/ *$//;/^$/d" >> "$DOMAINS_FILE"
+            echo "$DOMAINS_LIST" | tr " ," "\n\n" | sed "s/^ *//;s/ *$//;/^$/d" >> "$DOMAINS_FILE"
           fi
 
           sort -u "$DOMAINS_FILE" -o "$DOMAINS_FILE"
