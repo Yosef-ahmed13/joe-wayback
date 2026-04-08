@@ -52,7 +52,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: false
+          cache: true
 
       - name: "Install waybackurls (fresh, no cache)"
         run: |
@@ -142,13 +142,7 @@ jobs:
             -tg-token  "$TELEGRAM_BOT_TOKEN" \
             -tg-chat   "$TELEGRAM_CHAT_ID"
 
-      - name: "Upload Results as GitHub Artifact"
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: wayback-results-${{ github.run_id }}
-          path: /tmp/wayback_results/
-          retention-days: 7
+
 
       - name: "Job Summary"
         if: always()
