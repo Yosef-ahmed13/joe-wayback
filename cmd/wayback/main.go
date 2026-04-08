@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"encoding/csv"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -33,7 +32,8 @@ type Config struct {
 
 type DomainResult struct {
 	Domain string
-	URLs   []string
+	Count  int
+	File   string
 	Err    error
 }
 
@@ -51,7 +51,6 @@ func main() {
 	flag.IntVar(&cfg.Workers, "workers", 3, "Concurrent workers (default 3)")
 	flag.Parse()
 
-	// Also accept from environment variables (for GitHub Actions secrets)
 	if cfg.TGToken == "" {
 		cfg.TGToken = os.Getenv("TELEGRAM_BOT_TOKEN")
 	}
@@ -59,7 +58,6 @@ func main() {
 		cfg.TGChatID = os.Getenv("TELEGRAM_CHAT_ID")
 	}
 
-	// ── Collect domains ────────────────────────────────────────────────────────
 	domains, err := collectDomains(cfg)
 	if err != nil {
 		fatalf("❌ Could not read domains: %v\n", err)
@@ -69,19 +67,16 @@ func main() {
 	}
 
 	fmt.Printf("🎯 Scanning %d domain(s) with waybackurls...\n\n", len(domains))
-	sendTelegram(cfg, fmt.Sprintf("🕵️ *WaybackRecon Started*\n\n📋 Domains: %d\n⏰ Started: %s",
+	sendTelegram(cfg, fmt.Sprintf("🕵️ *WaybackRecon Started*\n\n📋 Domains: %d\n⏰ Started: %s\n⚡ Memory Mode: Streaming to Disk",
 		len(domains), time.Now().UTC().Format("2006-01-02 15:04:05 UTC")), false, "")
 
-	// ── Create output dir ──────────────────────────────────────────────────────
 	if err := os.MkdirAll(cfg.OutputDir, 0755); err != nil {
 		fatalf("❌ Cannot create output dir: %v\n", err)
 	}
 
-	// ── Process domains (with worker pool) ────────────────────────────────────
 	jobs := make(chan string, len(domains))
 	results := make(chan DomainResult, len(domains))
 
-	// Limit concurrency
 	workers := cfg.Workers
 	if workers < 1 {
 		workers = 1
@@ -90,11 +85,13 @@ func main() {
 		workers = len(domains)
 	}
 
+	ts := time.Now().UTC().Format("20060102_150405")
+
 	for w := 0; w < workers; w++ {
 		go func() {
 			for domain := range jobs {
-				urls, err := runWaybackurls(domain)
-				results <- DomainResult{Domain: domain, URLs: urls, Err: err}
+				count, file, err := streamWaybackurls(cfg, domain, ts)
+				results <- DomainResult{Domain: domain, Count: count, File: file, Err: err}
 			}
 		}()
 	}
@@ -104,52 +101,25 @@ func main() {
 	}
 	close(jobs)
 
-	// ── Collect & write results ────────────────────────────────────────────────
-	timestamp := time.Now().UTC().Format("20060102_150405")
 	var allFiles []string
 	totalURLs := 0
 
 	for i := 0; i < len(domains); i++ {
 		res := <-results
 
-		if res.Err != nil {
+		if res.Err != nil && res.Count == 0 {
 			fmt.Printf("⚠️  [%s] Error: %v\n", res.Domain, res.Err)
 			continue
 		}
 
-		fmt.Printf("✅ [%s] Found %d URLs\n", res.Domain, len(res.URLs))
-		totalURLs += len(res.URLs)
+		fmt.Printf("✅ [%s] Found %d URLs\n", res.Domain, res.Count)
+		totalURLs += res.Count
 
-		if len(res.URLs) == 0 {
-			continue
-		}
-
-		// Write per-domain file
-		filename, err := writeResults(cfg, res.Domain, res.URLs, timestamp)
-		if err != nil {
-			fmt.Printf("⚠️  [%s] Write error: %v\n", res.Domain, err)
-			continue
-		}
-		allFiles = append(allFiles, filename)
-	}
-
-	// ── Write combined file if multiple domains ────────────────────────────────
-	if len(domains) > 1 && totalURLs > 0 {
-		allURLs := []string{}
-		for _, f := range allFiles {
-			lines, _ := readLines(f)
-			if cfg.OutputFmt == "csv" {
-				lines = lines[1:] // skip CSV header for non-first files
-			}
-			allURLs = append(allURLs, lines...)
-		}
-		combined, err := writeResultsRaw(cfg, "combined", allURLs, timestamp)
-		if err == nil {
-			allFiles = append(allFiles, combined)
+		if res.Count > 0 && res.File != "" {
+			allFiles = append(allFiles, res.File)
 		}
 	}
 
-	// ── Send results to Telegram ───────────────────────────────────────────────
 	summary := fmt.Sprintf(
 		"✅ *WaybackRecon Complete!*\n\n"+
 			"📋 Domains scanned: *%d*\n"+
@@ -168,86 +138,16 @@ func main() {
 		}
 	} else {
 		fmt.Println(summary)
-		fmt.Println("⚠️  Telegram not configured — results saved locally only")
 	}
 
 	fmt.Printf("\n🎉 Done! %d URLs from %d domains\n", totalURLs, len(domains))
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Stream function (bypasses memory issues) ──────────────────────────────
 
-func collectDomains(cfg Config) ([]string, error) {
-	var domains []string
+func streamWaybackurls(cfg Config, domain string, ts string) (int, string, error) {
+	fmt.Printf("🔍 Running waybackurls for: %s (streaming)\n", domain)
 
-	if cfg.Domain != "" {
-		for _, d := range strings.Split(cfg.Domain, ",") {
-			d = strings.TrimSpace(d)
-			if d != "" {
-				domains = append(domains, d)
-			}
-		}
-	}
-
-	if cfg.DomainsFile != "" {
-		f, err := os.Open(cfg.DomainsFile)
-		if err != nil {
-			return nil, fmt.Errorf("open file: %w", err)
-		}
-		defer f.Close()
-
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line != "" && !strings.HasPrefix(line, "#") {
-				domains = append(domains, line)
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			return nil, fmt.Errorf("read file: %w", err)
-		}
-	}
-
-	// Deduplicate
-	seen := make(map[string]bool)
-	unique := []string{}
-	for _, d := range domains {
-		if !seen[d] {
-			seen[d] = true
-			unique = append(unique, d)
-		}
-	}
-
-	return unique, nil
-}
-
-func runWaybackurls(domain string) ([]string, error) {
-	fmt.Printf("🔍 Running waybackurls for: %s\n", domain)
-
-	cmd := exec.Command("waybackurls", domain)
-	out, err := cmd.Output()
-	if err != nil {
-		// Try with stdin pipe method as fallback
-		cmd2 := exec.Command("sh", "-c", fmt.Sprintf("echo '%s' | waybackurls", domain))
-		out2, err2 := cmd2.Output()
-		if err2 != nil {
-			return nil, fmt.Errorf("waybackurls failed: %w", err)
-		}
-		out = out2
-	}
-
-	var urls []string
-	scanner := bufio.NewScanner(bytes.NewReader(out))
-	for scanner.Scan() {
-		u := strings.TrimSpace(scanner.Text())
-		if u != "" {
-			urls = append(urls, u)
-		}
-	}
-
-	return urls, nil
-}
-
-func writeResults(cfg Config, domain string, urls []string, ts string) (string, error) {
 	safeDomain := strings.ReplaceAll(domain, ".", "_")
 	ext := cfg.OutputFmt
 	if ext != "csv" && ext != "txt" {
@@ -258,61 +158,90 @@ func writeResults(cfg Config, domain string, urls []string, ts string) (string, 
 
 	f, err := os.Create(filename)
 	if err != nil {
-		return "", err
+		return 0, "", err
 	}
 	defer f.Close()
 
 	if ext == "csv" {
-		w := csv.NewWriter(f)
-		_ = w.Write([]string{"domain", "url"})
-		for _, u := range urls {
-			_ = w.Write([]string{domain, u})
-		}
-		w.Flush()
-		return filename, w.Error()
+		f.WriteString("domain,url\n")
+	} else {
+		f.WriteString(fmt.Sprintf("# waybackurls results for: %s\n\n", domain))
 	}
 
-	// Plain text
-	bw := bufio.NewWriter(f)
-	fmt.Fprintf(bw, "# waybackurls results for: %s\n", domain)
-	fmt.Fprintf(bw, "# Generated: %s\n", time.Now().UTC().Format(time.RFC3339))
-	fmt.Fprintf(bw, "# Total URLs: %d\n\n", len(urls))
-	for _, u := range urls {
-		fmt.Fprintln(bw, u)
-	}
-	return filename, bw.Flush()
-}
-
-func writeResultsRaw(cfg Config, name string, lines []string, ts string) (string, error) {
-	ext := cfg.OutputFmt
-	if ext != "csv" && ext != "txt" {
-		ext = "txt"
-	}
-	filename := filepath.Join(cfg.OutputDir, fmt.Sprintf("%s_%s.%s", name, ts, ext))
-	f, err := os.Create(filename)
+	cmd := exec.Command("waybackurls", domain)
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", err
+		return 0, "", err
 	}
-	defer f.Close()
-	bw := bufio.NewWriter(f)
-	for _, l := range lines {
-		fmt.Fprintln(bw, l)
-	}
-	return filename, bw.Flush()
-}
 
-func readLines(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
+	if err := cmd.Start(); err != nil {
+		return 0, "", err
 	}
-	defer f.Close()
-	var lines []string
-	scanner := bufio.NewScanner(f)
+
+	count := 0
+	scanner := bufio.NewScanner(stdout)
+	// Increase buffer size for extremely long URLs sometimes returned
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
 	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
+		u := strings.TrimSpace(scanner.Text())
+		if u != "" {
+			count++
+			if ext == "csv" {
+				f.WriteString(fmt.Sprintf("%s,%s\n", domain, u))
+			} else {
+				f.WriteString(fmt.Sprintf("%s\n", u))
+			}
+		}
 	}
-	return lines, scanner.Err()
+
+	// This may return an error if Wayback times out after printing partial results.
+	// But count will have whatever we successfully read!
+	cmdErr := cmd.Wait()
+
+	if count > 0 {
+		return count, filename, nil
+	}
+
+	return 0, "", cmdErr
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+func collectDomains(cfg Config) ([]string, error) {
+	var domains []string
+	if cfg.Domain != "" {
+		for _, d := range strings.Split(cfg.Domain, ",") {
+			d = strings.TrimSpace(d)
+			if d != "" {
+				domains = append(domains, d)
+			}
+		}
+	}
+	if cfg.DomainsFile != "" {
+		f, err := os.Open(cfg.DomainsFile)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line != "" && !strings.HasPrefix(line, "#") {
+				domains = append(domains, line)
+			}
+		}
+	}
+	seen := make(map[string]bool)
+	unique := []string{}
+	for _, d := range domains {
+		if !seen[d] {
+			seen[d] = true
+			unique = append(unique, d)
+		}
+	}
+	return unique, nil
 }
 
 // ─── Telegram ─────────────────────────────────────────────────────────────────
@@ -321,13 +250,10 @@ func sendTelegram(cfg Config, text string, isFile bool, filePath string) {
 	if cfg.TGToken == "" || cfg.TGChatID == "" {
 		return
 	}
-
 	if isFile && filePath != "" {
 		sendTelegramFile(cfg, filePath, text)
 		return
 	}
-
-	// Send text message
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", cfg.TGToken)
 	payload := map[string]string{
 		"chat_id":    cfg.TGChatID,
@@ -335,54 +261,34 @@ func sendTelegram(cfg Config, text string, isFile bool, filePath string) {
 		"parse_mode": "Markdown",
 	}
 	body, _ := json.Marshal(payload)
-
 	resp, err := http.Post(apiURL, "application/json", bytes.NewReader(body))
 	if err != nil {
 		fmt.Printf("⚠️  Telegram send error: %v\n", err)
 		return
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(resp.Body)
-		fmt.Printf("⚠️  Telegram API error %d: %s\n", resp.StatusCode, string(b))
-	}
 }
 
 func sendTelegramFile(cfg Config, filePath, caption string) {
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendDocument", cfg.TGToken)
-
 	f, err := os.Open(filePath)
 	if err != nil {
 		fmt.Printf("⚠️  Cannot open file for Telegram: %v\n", err)
 		return
 	}
 	defer f.Close()
-
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
-
 	_ = mw.WriteField("chat_id", cfg.TGChatID)
 	_ = mw.WriteField("caption", caption)
 	_ = mw.WriteField("parse_mode", "Markdown")
-
 	fw, err := mw.CreateFormFile("document", filepath.Base(filePath))
-	if err != nil {
-		fmt.Printf("⚠️  Cannot create form file: %v\n", err)
-		return
-	}
-	if _, err := io.Copy(fw, f); err != nil {
-		fmt.Printf("⚠️  Cannot copy file content: %v\n", err)
-		return
+	if err == nil {
+		io.Copy(fw, f)
 	}
 	mw.Close()
-
-	req, err := http.NewRequest("POST", apiURL, &buf)
-	if err != nil {
-		fmt.Printf("⚠️  Cannot create request: %v\n", err)
-		return
-	}
+	req, _ := http.NewRequest("POST", apiURL, &buf)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
-
 	client := &http.Client{Timeout: 120 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -390,11 +296,7 @@ func sendTelegramFile(cfg Config, filePath, caption string) {
 		return
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(resp.Body)
-		fmt.Printf("⚠️  Telegram file API error %d: %s\n", resp.StatusCode, string(b))
-	} else {
+	if resp.StatusCode == 200 {
 		fmt.Printf("📤 Sent to Telegram: %s\n", filepath.Base(filePath))
 	}
 }
