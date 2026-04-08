@@ -56,8 +56,9 @@ jobs:
 
       - name: "Install waybackurls (fresh, no cache)"
         run: |
-          echo "Installing waybackurls..."
+          echo "Installing waybackurls & subfinder..."
           go install github.com/tomnomnom/waybackurls@latest
+          go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
           echo "$HOME/go/bin" >> $GITHUB_PATH
           echo "Done"
 
