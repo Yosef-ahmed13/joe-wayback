@@ -56,8 +56,8 @@ jobs:
 
       - name: "Install waybackurls (fresh, no cache)"
         run: |
-          echo "Installing waybackurls..."
-          go install github.com/tomnomnom/waybackurls@latest
+          echo "Installing gau (better waybackurls)..."
+          go install github.com/lc/gau/v2/cmd/gau@latest
           echo "$HOME/go/bin" >> $GITHUB_PATH
           echo "Done"
 
