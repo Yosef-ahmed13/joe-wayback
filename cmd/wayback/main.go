@@ -66,7 +66,7 @@ func main() {
 		fatalf("❌ No domains provided. Use -domain or -file\n")
 	}
 
-	fmt.Printf("🎯 Scanning %d domain(s) with gau...\n\n", len(domains))
+	fmt.Printf("🎯 Scanning %d domain(s) with waybackurls...\n\n", len(domains))
 	sendTelegram(cfg, fmt.Sprintf("🕵️ *WaybackRecon Started*\n\n📋 Domains: %d\n⏰ Started: %s\n⚡ Memory Mode: Streaming to Disk",
 		len(domains), time.Now().UTC().Format("2006-01-02 15:04:05 UTC")), false, "")
 
@@ -146,7 +146,7 @@ func main() {
 // ─── Stream function (bypasses memory issues) ──────────────────────────────
 
 func streamWaybackurls(cfg Config, domain string, ts string) (int, string, error) {
-	fmt.Printf("🔍 Running gau for: %s (streaming)\n", domain)
+	fmt.Printf("🔍 Running waybackurls for: %s (streaming)\n", domain)
 
 	safeDomain := strings.ReplaceAll(domain, ".", "_")
 	ext := cfg.OutputFmt
@@ -165,10 +165,10 @@ func streamWaybackurls(cfg Config, domain string, ts string) (int, string, error
 	if ext == "csv" {
 		f.WriteString("domain,url\n")
 	} else {
-		f.WriteString(fmt.Sprintf("# wayback urls (gau) results for: %s\n\n", domain))
+		f.WriteString(fmt.Sprintf("# waybackurls results for: %s\n\n", domain))
 	}
 
-	cmd := exec.Command("gau", "--threads", "5", domain)
+	cmd := exec.Command("sh", "-c", "echo '" + domain + "' | waybackurls")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return 0, "", err
