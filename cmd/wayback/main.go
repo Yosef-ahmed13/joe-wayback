@@ -56,19 +56,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("🎯 Scanning %d domain(s) with waybackurls...
-
-", len(domains))
-	sendTelegram(cfg, fmt.Sprintf("🕵️ *WaybackRecon Started*
-
-📋 Domains: %d
-⏰ Started: %s
-⏳ Chunk Size: 5000 URLs",
-		len(domains), time.Now().UTC().Format("2006-01-02 15:04:05 UTC")), false, "")
+	fmt.Printf("🎯 Scanning %d domain(s) with waybackurls...\n\n", len(domains))
+	
+	msg := fmt.Sprintf("🕵️ *WaybackRecon Started*\n\n📋 Domains: %d\n⏰ Started: %s\n⏳ Chunk Size: 5000 URLs",
+		len(domains), time.Now().UTC().Format("2006-01-02 15:04:05 UTC"))
+	sendTelegram(cfg, msg, false, "")
 
 	if err := os.MkdirAll(cfg.OutputDir, 0755); err != nil {
-		fmt.Printf("❌ Cannot create output dir: %v
-", err)
+		fmt.Printf("❌ Cannot create output dir: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -99,39 +94,30 @@ func main() {
 		res := <-results
 		totalURLs += res.Count
 		if res.Err != nil && res.Count == 0 {
-			fmt.Printf("⚠️  [%s] Error: %v
-", res.Domain, res.Err)
+			fmt.Printf("⚠️  [%s] Error: %v\n", res.Domain, res.Err)
 		} else {
-			fmt.Printf("✅ [%s] Found %d URLs
-", res.Domain, res.Count)
+			fmt.Printf("✅ [%s] Found %d URLs\n", res.Domain, res.Count)
 		}
 	}
 
 	summary := fmt.Sprintf(
-		"✅ *WaybackRecon Complete!*
-
-📋 Domains scanned: *%d*
-🔗 Total URLs found: *%d*
-⏰ Finished: %s",
+		"✅ *WaybackRecon Complete!*\n\n📋 Domains scanned: *%d*\n🔗 Total URLs found: *%d*\n⏰ Finished: %s",
 		len(domains), totalURLs,
 		time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
 	)
 
 	sendTelegram(cfg, summary, false, "")
-	fmt.Printf("
-🎉 Done! %d URLs from %d domains
-", totalURLs, len(domains))
+	fmt.Printf("\n🎉 Done! %d URLs from %d domains\n", totalURLs, len(domains))
 }
 
 func runWaybackChunked(cfg Config, domain string, ts string) (int, error) {
-	fmt.Printf("🔍 Running waybackurls for: %s (Chunking 5000 URLs)
-", domain)
+	fmt.Printf("🔍 Running waybackurls for: %s (Chunking 5000 URLs)\n", domain)
 
 	safeDomain := strings.ReplaceAll(domain, ".", "_")
 	ext := cfg.OutputFmt
 	if ext != "csv" && ext != "txt" { ext = "txt" }
 
-	cmd := exec.Command("sh", "-c", "echo '" + domain + "' | waybackurls")
+	cmd := exec.Command("waybackurls", domain)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return 0, err
@@ -161,8 +147,7 @@ func runWaybackChunked(cfg Config, domain string, ts string) (int, error) {
 			if count >= 5000 {
 				f.Close()
 				caption := fmt.Sprintf("📁 %s_p%d.%s (%d URLs)", safeDomain, partNum, ext, count)
-				fmt.Printf("📤 Sending Chunk Part %d (%d URLs)...
-", partNum, count)
+				fmt.Printf("📤 Sending Chunk Part %d (%d URLs)...\n", partNum, count)
 				sendTelegramFile(cfg, filename, caption)
 
 				// Start new chunk
@@ -180,11 +165,10 @@ func runWaybackChunked(cfg Config, domain string, ts string) (int, error) {
 	if count > 0 {
 		f.Close()
 		caption := fmt.Sprintf("📁 %s_p%d.%s (Last Chunk: %d URLs)", safeDomain, partNum, ext, count)
-		fmt.Printf("📤 Sending Final Chunk Part %d (%d URLs)...
-", partNum, count)
+		fmt.Printf("📤 Sending Final Chunk Part %d (%d URLs)...\n", partNum, count)
 		sendTelegramFile(cfg, filename, caption)
 	} else {
-		f.Close() // close empty file
+		f.Close()
 	}
 
 	if totalCount > 0 {
@@ -247,8 +231,6 @@ func sendTelegramFile(cfg Config, filePath, caption string) {
 	mw := multipart.NewWriter(&buf)
 	mw.WriteField("chat_id", cfg.TGChatID)
 	mw.WriteField("caption", caption)
-	
-	// Set parse_mode but safely escape anything if we wanted, no need for simple text caption
 	
 	fw, err := mw.CreateFormFile("document", filepath.Base(filePath))
 	if err == nil { io.Copy(fw, f) }
