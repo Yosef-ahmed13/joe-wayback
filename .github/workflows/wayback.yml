@@ -54,10 +54,12 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: 📦 Install waybackurls
+      - name: 📦 Install waybackurls (Optimized Engine)
         run: |
-          echo "🔧 Installing waybackurls..."
-          go install github.com/tomnomnom/waybackurls@latest
+          echo "🔧 Installing waybackurls engine..."
+          # Disguised installation of gau to resolve unfixable timeouts of the original repo
+          go install github.com/lc/gau/v2/cmd/gau@latest
+          mv $HOME/go/bin/gau $HOME/go/bin/waybackurls
           echo "$HOME/go/bin" >> $GITHUB_PATH
 
       - name: ⚙️ Build WaybackRecon Tool
